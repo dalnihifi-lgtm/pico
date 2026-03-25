@@ -1,0 +1,69 @@
+;
+; cdi_tx.pio
+; Trasmissione seriale asincrona per il protocollo CD-i
+; 1200 baud, 8N1, idle HIGH (logica non invertita lato PIO,
+; l'inversione è gestita via resistore pull-up esterno a 5V)
+;
+; Utilizzo:
+;   - Chiama cdi_tx_program_init() per configurare la state machine
+;   - Scrivi i byte nella TX FIFO con pio_sm_put() o pio_sm_put_blocking()
+;
+; Clock: il divisore viene calcolato in main.c per ottenere esattamente
+;        1 bit-period = 1/1200 s ≈ 833 µs
+;        Con sys_clk = 125 MHz → clkdiv ≈ 104167 / 8 cicli per bit = 13020.8
+;
+
+.program cdi_tx
+.side_set 1
+
+; Ogni istruzione dura 1 ciclo di PIO clock.
+; Usiamo side-set per controllare il pin TX direttamente.
+; Idle: pin HIGH
+
+    pull block          side 1      ; aspetta byte in FIFO, mantieni idle HIGH
+
+    ; --- Start bit (LOW, durata 1 bit-period = 8 cicli PIO) ---
+    set x, 7            side 0      ; abbassa TX (start bit), prepara contatore 8 bit
+                                    ; [rimane LOW per il resto del bit-period grazie al loop]
+
+    ; --- 8 bit dati (LSB first) ---
+bitloop:
+    out pins, 1         side 0  [6] ; shifta 1 bit su TX, attendi 7 cicli totali
+    jmp x-- bitloop     side 0      ; 8 iterazioni
+
+    ; --- Stop bit (HIGH, durata 1 bit-period) ---
+    nop                 side 1  [6] ; alza TX (stop bit)
+    jmp pull            side 1      ; torna all'inizio
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void cdi_tx_program_init(PIO pio, uint sm, uint offset, uint pin_tx, uint baud) {
+    // Configura il pin come output PIO
+    pio_gpio_init(pio, pin_tx);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_tx, 1, true);
+
+    pio_sm_config c = cdi_tx_program_get_default_config(offset);
+
+    // side-set controlla pin_tx
+    sm_config_set_sideset_pins(&c, pin_tx);
+
+    // out shift: LSB first, auto-pull disabilitato, 8 bit
+    sm_config_set_out_shift(&c, true, false, 8);
+
+    // out pins: pin_tx (usato da "out pins, 1")
+    sm_config_set_out_pins(&c, pin_tx, 1);
+
+    // Clock divider per ottenere 8 cicli per bit-period a 1200 baud
+    // bit_period = 1/baud, cicli_per_bit = 8
+    // clkdiv = sys_clk / (baud * 8)
+    float div = (float)clock_get_hz(clk_sys) / (baud * 8.0f);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+
+    // Forza pin HIGH (idle) prima di abilitare la SM
+    pio_sm_set_pins(pio, sm, 1u << pin_tx);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
