@@ -5,7 +5,6 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  # Permette di avviare il build manualmente dalla tab Actions
   workflow_dispatch:
 
 jobs:
@@ -32,24 +31,19 @@ jobs:
           echo "PICO_SDK_PATH=${{ github.workspace }}/pico-sdk" >> $GITHUB_ENV
 
       - name: Configure CMake
-        run: |
-          mkdir build
-          cd build
-          cmake ..
+        run: cmake -B build -DCMAKE_VERBOSE_MAKEFILE=ON
 
       - name: Build
-        run: |
-          cd build
-          make -j$(nproc)
+        run: cmake --build build --parallel $(nproc)
 
-      - name: Upload UF2 artifact
+      - name: Upload UF2
         uses: actions/upload-artifact@v4
         with:
           name: cdi_nes_controller-uf2
           path: build/cdi_nes_controller.uf2
           if-no-files-found: error
 
-      - name: Upload ELF artifact (per debug)
+      - name: Upload ELF (debug)
         uses: actions/upload-artifact@v4
         with:
           name: cdi_nes_controller-elf
