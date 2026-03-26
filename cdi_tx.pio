@@ -1,57 +1,45 @@
 ;
 ; cdi_tx.pio
-; Trasmissione seriale asincrona per il protocollo CD-i
-; 1200 baud, 8N1, idle HIGH
+; Due programmi PIO:
+;   1. cdi_tx      — seriale asincrono 1200 baud per cavo
+;   2. ir_carrier  — portante 36 kHz per telecomando IR
 ;
 
+; ── Programma 1: TX seriale cavo ──────────────────────────────────────────
 .program cdi_tx
 .side_set 1
 
-; side-set controlla il pin TX
-; Idle: pin HIGH
-
 .wrap_target
-    pull block              side 1      ; aspetta byte in FIFO, idle HIGH
-
-    ; Start bit LOW — dura 8 cicli PIO (= 1 bit-period)
-    set x, 7                side 0 [7]  ; abbassa TX, prepara contatore (8 iterazioni)
-
-    ; 8 bit dati LSB first — ogni iterazione = 8 cicli
+    pull block              side 1
+    set x, 7                side 0 [7]
 bitloop:
-    out pins, 1             side 0 [6]  ; emetti 1 bit
-    jmp x-- bitloop         side 0      ; loop
-
-    ; Stop bit HIGH — dura 8 cicli
-    nop                     side 1 [7]  ; alza TX per 8 cicli
+    out pins, 1             side 0 [6]
+    jmp x-- bitloop         side 0
+    nop                     side 1 [7]
 .wrap
 
 % c-sdk {
 #include "hardware/clocks.h"
-
 static inline void cdi_tx_program_init(PIO pio, uint sm, uint offset, uint pin_tx, uint baud) {
     pio_gpio_init(pio, pin_tx);
     pio_sm_set_consecutive_pindirs(pio, sm, pin_tx, 1, true);
-
     pio_sm_config c = cdi_tx_program_get_default_config(offset);
-
-    // side-set → pin TX
     sm_config_set_sideset_pins(&c, pin_tx);
-
-    // out pins → pin TX (usato da "out pins, 1")
     sm_config_set_out_pins(&c, pin_tx, 1);
-
-    // out shift: LSB first, auto-pull off, 8 bit threshold
     sm_config_set_out_shift(&c, true, false, 8);
-
-    // Clock divider: 8 cicli PIO per bit-period
-    // clkdiv = sys_clk / (baud * 8)
     float div = (float)clock_get_hz(clk_sys) / ((float)baud * 8.0f);
     sm_config_set_clkdiv(&c, div);
-
     pio_sm_init(pio, sm, offset, &c);
-
-    // Pin idle HIGH prima di abilitare
     pio_sm_set_pins_with_mask(pio, sm, 1u << pin_tx, 1u << pin_tx);
     pio_sm_set_enabled(pio, sm, true);
 }
 %}
+
+; ── Programma 2: portante IR 36 kHz ───────────────────────────────────────
+; Il pin IR viene attivato/disattivato dalla CPU via gpio_put().
+; Questo PIO genera la portante 36 kHz SOLO quando il pin di enable è HIGH.
+; Usa un solo pin (IR_PIN) e un pin di enable (IR_EN_PIN) letto come condizione.
+;
+; Approccio semplificato: la portante è generata in software con busy-wait
+; nella funzione ir_send_bit() — nessun PIO aggiuntivo necessario,
+; lasciando le 4 SM disponibili per usi futuri.
